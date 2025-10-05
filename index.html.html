@@ -1,0 +1,676 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Smart Coastal Early Warning - Pantai Gandoriah</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+    <!-- Custom CSS -->
+    <style>
+        body {
+            font-family: 'Roboto', sans-serif;
+            background: linear-gradient(to bottom, #f0f8ff, #e0f7fa);
+            color: #333;
+            transition: background 0.3s, color 0.3s;
+            margin: 0;
+            overflow-x: hidden;
+        }
+        body.dark-mode {
+            background: linear-gradient(to bottom, #121212, #1e1e1e);
+            color: #fff;
+        }
+        .navbar {
+            background-color: #1e90ff;
+            transition: background 0.3s;
+        }
+        .navbar.dark-mode {
+            background-color: #0d47a1;
+        }
+        .navbar-brand, .nav-link {
+            color: #fff !important;
+        }
+        .hero {
+            background: linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('https://images.pexels.com/photos/30693592/pexels-photo-30693592.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2');
+            background-size: cover;
+            background-position: center;
+            color: #fff;
+            padding: 100px 0;
+            text-align: center;
+            border-radius: 0 0 20px 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            animation: fadeIn 1s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .status-gauge {
+            width: 140px;
+            height: 140px;
+            border-radius: 50%;
+            margin: 20px auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.4em;
+            font-weight: bold;
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            position: relative;
+            transition: transform 0.3s;
+        }
+        .status-gauge:hover {
+            transform: scale(1.1);
+        }
+        .status-gauge::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: -30px;
+            background: rgba(0,0,0,0.8);
+            color: #fff;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 0.9em;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .status-gauge:hover::after {
+            opacity: 1;
+        }
+        .status-safe { background-color: #28a745; }
+        .status-warning { background-color: #ffc107; color: #333; }
+        .status-danger { background-color: #dc3545; animation: pulse-danger 1s infinite; }
+        @keyframes pulse-danger {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        #map { 
+            height: 450px; 
+            margin-top: 20px; 
+            border-radius: 10px; 
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1); 
+            width: 100%;
+        }
+        .card {
+            margin-bottom: 20px;
+            border: none;
+            border-radius: 15px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            transition: transform 0.3s, box-shadow 0.3s;
+            overflow: auto; /* Pastikan grafik nggak nyosor */
+            padding: 15px;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+        }
+        .card.dark-mode {
+            background-color: #333;
+            color: #fff;
+        }
+        .card canvas {
+            max-height: 250px; /* Batas maksimum tinggi grafik */
+            max-width: 100%; /* Pastikan nggak melebihi card */
+            margin: 0 auto;
+            display: block;
+        }
+        .section-bg {
+            background-color: #ffffff;
+            padding: 40px 0;
+            border-radius: 15px;
+            margin-bottom: 40px;
+            animation: fadeIn 1s ease-in;
+        }
+        .section-bg.dark-mode {
+            background-color: #424242;
+        }
+        .recommendation {
+            padding: 15px;
+            border-left: 5px solid;
+            margin-top: 10px;
+            border-radius: 5px;
+        }
+        .rec-safe { border-left-color: #28a745; background-color: #d4edda; }
+        .rec-warning { border-left-color: #ffc107; background-color: #fff3cd; }
+        .rec-danger { border-left-color: #dc3545; background-color: #f8d7da; }
+        .dark-mode .rec-safe { background-color: #155724; }
+        .dark-mode .rec-warning { background-color: #856404; }
+        .dark-mode .rec-danger { background-color: #721c24; }
+        .carousel img {
+            height: 300px;
+            object-fit: cover;
+            border-radius: 10px;
+        }
+        /* Media Queries untuk iPad, HP, dan Laptop */
+        @media (max-width: 1024px) {
+            .hero { padding: 80px 0; font-size: 1.1em; }
+            .hero h1 { font-size: 2em; }
+            #map { height: 350px; }
+            .status-gauge { width: 120px; height: 120px; font-size: 1.2em; }
+            .carousel img { height: 200px; }
+            .card canvas { max-height: 200px; }
+        }
+        @media (max-width: 768px) {
+            .hero { padding: 60px 0; font-size: 1em; }
+            .hero h1 { font-size: 1.8em; }
+            #map { height: 300px; }
+            .status-gauge { width: 100px; height: 100px; font-size: 1em; }
+            .carousel img { height: 150px; }
+            .card canvas { max-height: 150px; }
+        }
+        @media (max-width: 576px) {
+            .hero { padding: 50px 0; }
+            .hero h1 { font-size: 1.5em; }
+            .btn-lg { font-size: 0.9em; padding: 8px 16px; }
+            .card h5 { font-size: 1em; }
+            .card canvas { max-height: 120px; }
+        }
+        @media (min-width: 1200px) {
+            .card { padding: 20px; }
+            .card canvas { max-height: 300px; }
+            .hero { padding: 120px 0; }
+            #map { height: 500px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="#">Smart Coastal EWS <i class="bi bi-water"></i></a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item"><a class="nav-link" href="#home">Home</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#dashboard">Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#predict">Prediksi</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#map">Peta</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#edu">Edukasi</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#report">Laporan</a></li>
+                    <li class="nav-item"><a class="nav-link" href="#" id="darkModeToggle"><i class="bi bi-moon-stars-fill"></i></a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section id="home" class="hero">
+        <div class="container">
+            <h1>Smart Coastal Early Warning <i class="bi bi-shield-check"></i></h1>
+            <p>Pantau Abrasi Pantai Gandoriah Real-Time, Prediksi Dini, dan Mitigasi Bahaya</p>
+            <a href="#dashboard" class="btn btn-primary btn-lg">Lihat Dashboard <i class="bi bi-graph-up"></i></a>
+        </div>
+    </section>
+
+    <!-- Dashboard Section -->
+    <section id="dashboard" class="py-5">
+        <div class="container section-bg">
+            <h2 class="text-center mb-4">Monitoring Real-Time <i class="bi bi-binoculars"></i></h2>
+            <div class="row">
+                <div class="col-md-4 col-sm-12">
+                    <div class="card">
+                        <div class="card-body text-center">
+                            <h5>Status Abrasi Saat Ini</h5>
+                            <div id="statusGauge" class="status-gauge status-warning" data-tooltip="Kondisi saat ini: Risiko sedang">Waspada</div>
+                            <p>Simulasi Status:</p>
+                            <select id="statusSelect" class="form-select mb-3">
+                                <option value="safe">Hijau - Aman</option>
+                                <option value="warning" selected>Kuning - Waspada</option>
+                                <option value="danger">Merah - Bahaya</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Tinggi Ombak <i class="bi bi-waves"></i></h5>
+                            <canvas id="waveChart" width="400" height="200"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Pasang Surut <i class="bi bi-arrow-down-up"></i></h5>
+                            <canvas id="tideChart" width="400" height="200"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Kelembapan Tanah <i class="bi bi-moisture"></i></h5>
+                            <canvas id="humidityChart" width="400" height="200"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-8 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Citra Drone Terbaru <i class="bi bi-camera"></i></h5>
+                            <div id="droneCarousel" class="carousel slide">
+                                <div class="carousel-inner">
+                                    <div class="carousel-item active">
+                                        <img src="https://images.pexels.com/photos/30693592/pexels-photo-30693592.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2" class="d-block w-100 rounded" alt="Drone Image 1">
+                                    </div>
+                                    <div class="carousel-item">
+                                        <img src="https://images.pexels.com/photos/1647527/pexels-photo-1647527.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2" class="d-block w-100 rounded" alt="Drone Image 2">
+                                    </div>
+                                    <div class="carousel-item">
+                                        <img src="https://images.pexels.com/photos/1005379/pexels-photo-1005379.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=2" class="d-block w-100 rounded" alt="Drone Image 3">
+                                    </div>
+                                </div>
+                                <button class="carousel-control-prev" type="button" data-bs-target="#droneCarousel" data-bs-slide="prev">
+                                    <span class="carousel-control-prev-icon"></span>
+                                </button>
+                                <button class="carousel-control-next" type="button" data-bs-target="#droneCarousel" data-bs-slide="next">
+                                    <span class="carousel-control-next-icon"></span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-12 text-center mt-3">
+                    <button class="btn btn-success btn-lg" data-bs-toggle="modal" data-bs-target="#notifyModal"><i class="bi bi-bell"></i> Aktifkan Notifikasi SMS/Medsos</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Prediksi Section -->
+    <section id="predict" class="py-5 bg-light">
+        <div class="container section-bg">
+            <h2 class="text-center mb-4">Prediksi Abrasi (AI/ML) <i class="bi bi-robot"></i></h2>
+            <div class="row">
+                <div class="col-md-6 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Prediksi Erosi Mingguan <i class="bi bi-chart-line"></i></h5>
+                            <canvas id="predictWeeklyChart" width="400" height="200"></canvas>
+                            <p>Estimasi: +0.5m erosi, Confidence: 90%</p>
+                            <div id="recBox" class="recommendation rec-warning">
+                                <strong>Rekomendasi:</strong> Persiapkan tanggul sementara dan pantau intensif. Hubungi pemerintah daerah.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Prediksi Erosi Bulanan <i class="bi bi-chart-bar"></i></h5>
+                            <canvas id="predictMonthlyChart" width="400" height="200"></canvas>
+                            <p>Estimasi: +2m erosi, Confidence: 85%</p>
+                            <div class="recommendation rec-danger">
+                                <strong>Rekomendasi:</strong> Evakuasi area rawan dan aktifkan protokol darurat.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Pilih Periode & Skenario Prediksi</h5>
+                            <select class="form-select mb-3">
+                                <option>1 Minggu</option>
+                                <option selected>1 Bulan</option>
+                                <option>3 Bulan</option>
+                            </select>
+                            <select class="form-select mb-3">
+                                <option>Cuaca Normal</option>
+                                <option>Cuaca Ekstrem</option>
+                            </select>
+                            <button class="btn btn-primary"><i class="bi bi-search"></i> Tampilkan Prediksi</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Peta Interaktif -->
+    <section id="map" class="py-5">
+        <div class="container section-bg">
+            <h2 class="text-center mb-4">Peta Interaktif Pantai Gandoriah <i class="bi bi-map"></i></h2>
+            <div id="map"></div>
+            <p class="text-center mt-3">Klik marker untuk detail sensor. Layer: Hijau (Aman), Kuning (Waspada), Merah (Bahaya).</p>
+        </div>
+    </section>
+
+    <!-- Edukasi Section -->
+    <section id="edu" class="py-5 bg-light">
+        <div class="container section-bg">
+            <h2 class="text-center mb-4">Mitigasi & Edukasi <i class="bi bi-book"></i></h2>
+            <div class="row">
+                <div class="col-md-4 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Lindungi Pantai <i class="bi bi-tree"></i></h5>
+                            <p>Tanam mangrove, hindari penambangan pasir, dan gunakan struktur permeabel.</p>
+                            <a href="#" class="btn btn-link">Baca Selengkapnya</a>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Video Edukasi <i class="bi bi-youtube"></i></h5>
+                            <div class="ratio ratio-16x9">
+                                <iframe src="https://www.youtube.com/embed/0Y0Wozd8l8o" allowfullscreen></iframe>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 col-sm-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5>Infografis Mitigasi <i class="bi bi-image"></i></h5>
+                            <img src="https://upload.wikimedia.org/wikipedia/commons/2/2a/Mitigasi_Abrasi_Pantai.png" class="img-fluid rounded" alt="Infografis Mitigasi Abrasi Pantai">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Laporan Section -->
+    <section id="report" class="py-5">
+        <div class="container section-bg">
+            <h2 class="text-center mb-4">Laporan Data Historis <i class="bi bi-file-earmark-text"></i></h2>
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>Tanggal</th>
+                        <th>Tinggi Ombak (m)</th>
+                        <th>Pasang Surut (m)</th>
+                        <th>Kelembapan (%)</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>2025-10-01</td>
+                        <td>1.2</td>
+                        <td>0.8</td>
+                        <td>65</td>
+                        <td><span class="badge bg-warning">Waspada</span></td>
+                    </tr>
+                    <tr>
+                        <td>2025-10-02</td>
+                        <td>1.5</td>
+                        <td>1.0</td>
+                        <td>70</td>
+                        <td><span class="badge bg-danger">Bahaya</span></td>
+                    </tr>
+                    <tr>
+                        <td>2025-10-03</td>
+                        <td>0.9</td>
+                        <td>0.6</td>
+                        <td>60</td>
+                        <td><span class="badge bg-success">Aman</span></td>
+                    </tr>
+                </tbody>
+            </table>
+            <div class="text-center">
+                <a href="#" class="btn btn-primary"><i class="bi bi-download"></i> Download Laporan PDF</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Modal Notifikasi -->
+    <div class="modal fade" id="notifyModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Aktifkan Notifikasi</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Pilih metode notifikasi untuk update abrasi:</p>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="smsCheck">
+                        <label class="form-check-label" for="smsCheck">SMS</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="socialCheck">
+                        <label class="form-check-label" for="socialCheck">Medsos (X/Twitter)</label>
+                    </div>
+                    <input type="text" class="form-control mt-3" placeholder="Masukkan Email/No. HP">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button>
+                    <button type="button" class="btn btn-primary" onclick="alert('Notifikasi diaktifkan!')">Simpan</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="bg-dark text-white py-4">
+        <div class="container text-center">
+            <p>Kontak: asyifazendhiyaulhaq23@gmail.com | Universitas Negeri Padang <i class="bi bi-envelope"></i></p>
+            <p>Data: BNPB, IPCC | &copy; 2025 Smart Coastal EWS <i class="bi bi-copyright"></i></p>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Dark Mode Toggle
+        const darkModeToggle = document.getElementById('darkModeToggle');
+        darkModeToggle.addEventListener('click', () => {
+            document.body.classList.toggle('dark-mode');
+            document.querySelector('.navbar').classList.toggle('dark-mode');
+            document.querySelectorAll('.card').forEach(card => card.classList.toggle('dark-mode'));
+            document.querySelectorAll('.section-bg').forEach(sec => sec.classList.toggle('dark-mode'));
+        });
+
+        // Chart.js untuk grafik ombak
+        const ctxWave = document.getElementById('waveChart').getContext('2d');
+        new Chart(ctxWave, {
+            type: 'line',
+            data: {
+                labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'],
+                datasets: [{
+                    label: 'Tinggi Ombak (m)',
+                    data: [0.8, 1.0, 1.2, 1.5, 1.3, 1.1],
+                    borderColor: '#1e90ff',
+                    fill: true,
+                    backgroundColor: 'rgba(30, 144, 255, 0.2)',
+                    tension: 0.4
+                }]
+            },
+            options: { 
+                responsive: true,
+                maintainAspectRatio: true,
+                aspectRatio: 2,
+                scales: { 
+                    y: { beginAtZero: true, max: 2 },
+                    x: { ticks: { font: { size: 10 } } }
+                }
+            }
+        });
+
+        // Chart.js untuk pasang surut
+        const ctxTide = document.getElementById('tideChart').getContext('2d');
+        new Chart(ctxTide, {
+            type: 'bar',
+            data: {
+                labels: ['Hari 1', 'Hari 2', 'Hari 3', 'Hari 4'],
+                datasets: [{
+                    label: 'Pasang Surut (m)',
+                    data: [0.5, 0.7, 0.9, 0.6],
+                    backgroundColor: '#17a2b8'
+                }]
+            },
+            options: { 
+                responsive: true,
+                maintainAspectRatio: true,
+                aspectRatio: 2,
+                scales: { 
+                    y: { beginAtZero: true, max: 1.5 },
+                    x: { ticks: { font: { size: 10 } } }
+                }
+            }
+        });
+
+        // Chart.js untuk kelembapan
+        const ctxHumidity = document.getElementById('humidityChart').getContext('2d');
+        new Chart(ctxHumidity, {
+            type: 'doughnut',
+            data: {
+                labels: ['Kelembapan Saat Ini', 'Sisa'],
+                datasets: [{
+                    data: [65, 35],
+                    backgroundColor: ['#28a745', '#e9ecef']
+                }]
+            },
+            options: { 
+                responsive: true,
+                maintainAspectRatio: true,
+                aspectRatio: 1,
+                cutout: '70%'
+            }
+        });
+
+        // Chart.js untuk prediksi mingguan
+        const ctxPredictWeekly = document.getElementById('predictWeeklyChart').getContext('2d');
+        new Chart(ctxPredictWeekly, {
+            type: 'line',
+            data: {
+                labels: ['Hari 1', 'Hari 2', 'Hari 3', 'Hari 4', 'Hari 5', 'Hari 6', 'Hari 7'],
+                datasets: [{
+                    label: 'Prediksi Erosi Mingguan (m)',
+                    data: [0.1, 0.2, 0.3, 0.4, 0.5, 0.45, 0.5],
+                    borderColor: '#ffc107',
+                    fill: true,
+                    backgroundColor: 'rgba(255, 193, 7, 0.2)',
+                    tension: 0.4
+                }]
+            },
+            options: { 
+                responsive: true,
+                maintainAspectRatio: true,
+                aspectRatio: 2,
+                scales: { 
+                    y: { beginAtZero: true, max: 1 },
+                    x: { ticks: { font: { size: 10 } } }
+                }
+            }
+        });
+
+        // Chart.js untuk prediksi bulanan
+        const ctxPredictMonthly = document.getElementById('predictMonthlyChart').getContext('2d');
+        new Chart(ctxPredictMonthly, {
+            type: 'bar',
+            data: {
+                labels: ['Minggu 1', 'Minggu 2', 'Minggu 3', 'Minggu 4'],
+                datasets: [{
+                    label: 'Prediksi Erosi Bulanan (m)',
+                    data: [0.5, 1.0, 1.5, 2.0],
+                    backgroundColor: '#dc3545'
+                }]
+            },
+            options: { 
+                responsive: true,
+                maintainAspectRatio: true,
+                aspectRatio: 2,
+                scales: { 
+                    y: { beginAtZero: true, max: 3 },
+                    x: { ticks: { font: { size: 10 } } }
+                }
+            }
+        });
+
+        // Leaflet.js untuk peta dengan layer warna
+        const map = L.map('map').setView([-0.625, 100.117], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+        L.marker([-0.625, 100.117]).addTo(map)
+            .bindPopup('Sensor IoT #1: Ombak 1.2m, Kelembapan 65%, Status: Waspada')
+            .openPopup();
+        L.polygon([[-0.62, 100.11], [-0.63, 100.12], [-0.62, 100.13]], {color: 'yellow', fillOpacity: 0.4}).addTo(map).bindPopup('Zona Kuning: Waspada');
+        L.polygon([[-0.61, 100.10], [-0.62, 100.11], [-0.61, 100.12]], {color: 'red', fillOpacity: 0.4}).addTo(map).bindPopup('Zona Merah: Bahaya');
+        L.polygon([[-0.63, 100.13], [-0.64, 100.14], [-0.63, 100.15]], {color: 'green', fillOpacity: 0.4}).addTo(map).bindPopup('Zona Hijau: Aman');
+
+        // Ubah status gauge dan rekomendasi
+        const statusSelect = document.getElementById('statusSelect');
+        const statusGauge = document.getElementById('statusGauge');
+        const recBox = document.getElementById('recBox');
+        statusSelect.addEventListener('change', () => {
+            const value = statusSelect.value;
+            statusGauge.classList.remove('status-safe', 'status-warning', 'status-danger');
+            recBox.classList.remove('rec-safe', 'rec-warning', 'rec-danger');
+            if (value === 'safe') {
+                statusGauge.classList.add('status-safe');
+                statusGauge.innerText = 'Aman';
+                statusGauge.setAttribute('data-tooltip', 'Kondisi aman, lanjutkan pemantauan rutin.');
+                recBox.classList.add('rec-safe');
+                recBox.innerHTML = '<strong>Rekomendasi:</strong> Lanjutkan pemantauan rutin. Edukasi masyarakat tentang pencegahan abrasi.';
+            } else if (value === 'warning') {
+                statusGauge.classList.add('status-warning');
+                statusGauge.innerText = 'Waspada';
+                statusGauge.setAttribute('data-tooltip', 'Kondisi risiko sedang, pantau intensif.');
+                recBox.classList.add('rec-warning');
+                recBox.innerHTML = '<strong>Rekomendasi:</strong> Persiapkan tanggul sementara dan pantau intensif. Hubungi pemerintah daerah.';
+            } else {
+                statusGauge.classList.add('status-danger');
+                statusGauge.innerText = 'Bahaya';
+                statusGauge.setAttribute('data-tooltip', 'Kondisi kritis, segera lakukan evakuasi.');
+                recBox.classList.add('rec-danger');
+                recBox.innerHTML = '<strong>Rekomendasi:</strong> Evakuasi area rawan segera. Aktifkan protokol darurat dan koordinasi dengan BNPB.';
+            }
+        });
+    </script>
+</body>
+</html>
